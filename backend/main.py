@@ -19,6 +19,10 @@ from backend.services.change_planner import (
     create_change_plan,
 )
 
+from backend.services.change_verifier import (
+    verify_changed_file,
+)
+
 from backend.services.code_modifier import (
     generate_code_changes,
 )
@@ -465,9 +469,6 @@ def apply_change(
 
         # -------------------------------------------------
         # Step 1: Validate patch
-        #
-        # IMPORTANT:
-        # No backup is created before validation.
         # -------------------------------------------------
 
         validate_patch(
@@ -480,9 +481,6 @@ def apply_change(
 
         # -------------------------------------------------
         # Step 2: Create backup
-        #
-        # Backup is created only after validation
-        # succeeds.
         # -------------------------------------------------
 
         backup_path = create_backup(
@@ -503,17 +501,56 @@ def apply_change(
         )
 
         # -------------------------------------------------
-        # Step 4: Return success
+        # Step 4: Verify changed file
+        # -------------------------------------------------
+
+        verification = verify_changed_file(
+            project_path=request.project_path,
+            file_path=request.file_path,
+        )
+
+        # -------------------------------------------------
+        # Step 5: Rollback if verification fails
+        # -------------------------------------------------
+
+        if verification["status"] != "passed":
+
+            rollback_result = rollback_change(
+                project_path=request.project_path,
+                file_path=request.file_path,
+            )
+
+            return {
+                "status": "failed",
+                "message": (
+                    "Change was applied, but "
+                    "verification failed. "
+                    "The original file was restored."
+                ),
+                "backup_path": backup_path,
+                "result": result,
+                "verification": verification,
+                "rollback": rollback_result,
+            }
+
+        # -------------------------------------------------
+        # Step 6: Successful change
         # -------------------------------------------------
 
         return {
             "status": "success",
             "message": (
-                "Change applied successfully."
+                "Change applied and "
+                "verified successfully."
             ),
             "backup_path": backup_path,
             "result": result,
+            "verification": verification,
         }
+
+    # -----------------------------------------------------
+    # Security error
+    # -----------------------------------------------------
 
     except PermissionError as error:
 
@@ -534,6 +571,10 @@ def apply_change(
             detail=str(error),
         )
 
+    # -----------------------------------------------------
+    # Missing file
+    # -----------------------------------------------------
+
     except FileNotFoundError as error:
 
         if backup_path:
@@ -552,6 +593,10 @@ def apply_change(
             status_code=404,
             detail=str(error),
         )
+
+    # -----------------------------------------------------
+    # Directory instead of file
+    # -----------------------------------------------------
 
     except IsADirectoryError as error:
 
@@ -572,6 +617,10 @@ def apply_change(
             detail=str(error),
         )
 
+    # -----------------------------------------------------
+    # Validation / patch error
+    # -----------------------------------------------------
+
     except ValueError as error:
 
         if backup_path:
@@ -591,11 +640,13 @@ def apply_change(
             detail=str(error),
         )
 
+    # -----------------------------------------------------
+    # Unexpected error
+    # -----------------------------------------------------
+
     except Exception:
 
-        # -------------------------------------------------
-        # Unexpected failure after backup creation
-        # -------------------------------------------------
+        rollback_result = None
 
         if backup_path:
 
@@ -616,10 +667,6 @@ def apply_change(
                         "also failed."
                     ),
                 }
-
-        else:
-
-            rollback_result = None
 
         detail = (
             "The change could not be completed."

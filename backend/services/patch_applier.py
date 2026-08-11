@@ -5,6 +5,94 @@ from backend.services.file_reader import (
 )
 
 
+def _is_duplicate_code(
+    current_content: str,
+    code: str,
+) -> bool:
+    """
+    Check whether the proposed code already exists
+    as a complete code block in the target file.
+
+    This avoids treating a short fragment such as
+    'VALUE =' as a duplicate of:
+
+        VALUE = "something"
+
+    The duplicate check is based on complete lines
+    rather than arbitrary substrings.
+    """
+
+    normalized_code = code.strip()
+
+    if not normalized_code:
+        return False
+
+    current_lines = (
+        current_content
+        .splitlines()
+    )
+
+    code_lines = (
+        normalized_code
+        .splitlines()
+    )
+
+    # -----------------------------------------
+    # Single-line code
+    # -----------------------------------------
+
+    if len(code_lines) == 1:
+
+        proposed_line = (
+            code_lines[0].strip()
+        )
+
+        for current_line in current_lines:
+
+            if (
+                current_line.strip()
+                == proposed_line
+            ):
+                return True
+
+        return False
+
+    # -----------------------------------------
+    # Multi-line code
+    # -----------------------------------------
+
+    normalized_proposed_lines = [
+        line.strip()
+        for line in code_lines
+    ]
+
+    proposed_length = len(
+        normalized_proposed_lines
+    )
+
+    for index in range(
+        len(current_lines)
+        - proposed_length
+        + 1
+    ):
+
+        current_block = [
+            line.strip()
+            for line in current_lines[
+                index:
+                index + proposed_length
+            ]
+        ]
+
+        if (
+            current_block
+            == normalized_proposed_lines
+        ):
+            return True
+
+    return False
+
+
 def validate_patch(
     project_path: str,
     file_path: str,
@@ -32,9 +120,11 @@ def validate_patch(
     # -----------------------------------------
 
     try:
+
         target.relative_to(root)
 
     except ValueError:
+
         raise PermissionError(
             "The requested file is outside "
             "the project directory."
@@ -45,11 +135,13 @@ def validate_patch(
     # -----------------------------------------
 
     if not target.exists():
+
         raise FileNotFoundError(
             f"File not found: {file_path}"
         )
 
     if not target.is_file():
+
         raise IsADirectoryError(
             f"Path is not a file: {file_path}"
         )
@@ -67,6 +159,7 @@ def validate_patch(
         "replace",
         "append",
     }:
+
         raise ValueError(
             f"Unsupported operation: {operation}"
         )
@@ -75,14 +168,14 @@ def validate_patch(
     # Duplicate protection
     # -----------------------------------------
 
-    normalized_code = code.strip()
-
-    if normalized_code and (
-        normalized_code in current_content
+    if _is_duplicate_code(
+        current_content,
+        code,
     ):
+
         raise ValueError(
-            "The proposed code already exists "
-            "in the target file. "
+            "The proposed code already "
+            "exists in the target file. "
             "Patch rejected to prevent "
             "duplicate code."
         )
@@ -97,12 +190,14 @@ def validate_patch(
     }:
 
         if not anchor:
+
             raise ValueError(
                 f"{operation.capitalize()} "
                 "operation requires an anchor."
             )
 
         if anchor not in current_content:
+
             raise ValueError(
                 "The specified anchor was not "
                 "found in the file."
@@ -154,18 +249,22 @@ def apply_patch(
 
     if operation == "insert":
 
-        new_content = current_content.replace(
-            anchor,
-            anchor + "\n" + code,
-            1,
+        new_content = (
+            current_content.replace(
+                anchor,
+                anchor + "\n" + code,
+                1,
+            )
         )
 
     elif operation == "replace":
 
-        new_content = current_content.replace(
-            anchor,
-            code,
-            1,
+        new_content = (
+            current_content.replace(
+                anchor,
+                code,
+                1,
+            )
         )
 
     else:
