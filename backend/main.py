@@ -15,6 +15,12 @@ from backend.services.backup_manager import (
     create_backup,
 )
 
+from backend.services.change_history import (
+    clear_change_history,
+    get_change_history,
+    record_change,
+)
+
 from backend.services.change_planner import (
     create_change_plan,
 )
@@ -106,7 +112,7 @@ class ApplyChangeRequest(BaseModel):
 def root():
     return {
         "name": "SAGE",
-        "version": "0.1.0",
+        "version": app.version,
         "status": "running",
         "message": (
             "Software Assistant for "
@@ -520,6 +526,24 @@ def apply_change(
                 file_path=request.file_path,
             )
 
+            history_entry = record_change(
+                project_path=request.project_path,
+                file_path=request.file_path,
+                operation=request.operation,
+                status="failed",
+                verification_status=(
+                    verification["status"]
+                ),
+                rollback_status=(
+                    rollback_result["status"]
+                ),
+                message=(
+                    "Change failed verification "
+                    "and was automatically "
+                    "rolled back."
+                ),
+            )
+
             return {
                 "status": "failed",
                 "message": (
@@ -531,10 +555,30 @@ def apply_change(
                 "result": result,
                 "verification": verification,
                 "rollback": rollback_result,
+                "history": history_entry,
             }
 
         # -------------------------------------------------
-        # Step 6: Successful change
+        # Step 6: Record successful change
+        # -------------------------------------------------
+
+        history_entry = record_change(
+            project_path=request.project_path,
+            file_path=request.file_path,
+            operation=request.operation,
+            status="success",
+            verification_status=(
+                verification["status"]
+            ),
+            rollback_status=None,
+            message=(
+                "Change applied and "
+                "verified successfully."
+            ),
+        )
+
+        # -------------------------------------------------
+        # Step 7: Successful response
         # -------------------------------------------------
 
         return {
@@ -546,6 +590,7 @@ def apply_change(
             "backup_path": backup_path,
             "result": result,
             "verification": verification,
+            "history": history_entry,
         }
 
     # -----------------------------------------------------
@@ -644,7 +689,7 @@ def apply_change(
     # Unexpected error
     # -----------------------------------------------------
 
-    except Exception:
+    except Exception as error:
 
         rollback_result = None
 
@@ -682,4 +727,73 @@ def apply_change(
         raise HTTPException(
             status_code=500,
             detail=detail,
+        )
+
+
+# =========================================================
+# Change History Endpoint
+# =========================================================
+
+
+@app.get("/change-history")
+def change_history(
+    project_path: str,
+):
+
+    try:
+
+        history = get_change_history(
+            project_path
+        )
+
+        return {
+            "status": "success",
+            "history": history,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+# =========================================================
+# Clear Change History Endpoint
+# =========================================================
+
+
+@app.delete("/change-history")
+def clear_change_history_endpoint(
+    project_path: str,
+):
+
+    try:
+
+        result = clear_change_history(
+            project_path
+        )
+
+        return result
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
         )
