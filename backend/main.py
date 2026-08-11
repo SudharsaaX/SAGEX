@@ -9,6 +9,11 @@ from fastapi.responses import StreamingResponse
 
 from pydantic import BaseModel
 
+from backend.services.backup_manager import (
+    create_backup,
+    restore_backup,
+)
+
 from backend.services.change_planner import (
     create_change_plan,
 )
@@ -27,6 +32,7 @@ from backend.services.file_reader import (
 
 from backend.services.patch_applier import (
     apply_patch,
+    validate_patch,
 )
 
 from backend.services.project_analyzer import (
@@ -142,7 +148,6 @@ def receive_command(
     project_context = None
 
     if request.project_path:
-
         try:
             project_context = (
                 build_project_context(
@@ -163,7 +168,6 @@ def receive_command(
             )
 
     def generate_response():
-
         system_prompt = (
             "You are SAGE, an AI "
             "software development "
@@ -181,7 +185,6 @@ def receive_command(
         )
 
         if project_context:
-
             system_prompt += (
                 "\n\n"
                 "You have access to "
@@ -225,7 +228,6 @@ def receive_command(
         )
 
         for chunk in response:
-
             content = chunk[
                 "message"
             ]["content"]
@@ -248,9 +250,7 @@ def receive_command(
 def analyze_project(
     request: ProjectAnalysisRequest,
 ):
-
     try:
-
         project = scan_project(
             request.project_path
         )
@@ -261,14 +261,12 @@ def analyze_project(
         }
 
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error),
         )
 
     except NotADirectoryError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
@@ -284,9 +282,7 @@ def analyze_project(
 def read_file(
     request: FileReadRequest,
 ):
-
     try:
-
         file = read_project_file(
             request.project_path,
             request.file_path,
@@ -298,21 +294,18 @@ def read_file(
         }
 
     except PermissionError as error:
-
         raise HTTPException(
             status_code=403,
             detail=str(error),
         )
 
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error),
         )
 
     except IsADirectoryError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
@@ -328,9 +321,7 @@ def read_file(
 def project_context(
     request: ProjectAnalysisRequest,
 ):
-
     try:
-
         context = build_project_context(
             request.project_path
         )
@@ -341,14 +332,12 @@ def project_context(
         }
 
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error),
         )
 
     except NotADirectoryError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
@@ -364,9 +353,7 @@ def project_context(
 def plan_change(
     request: ChangePlanRequest,
 ):
-
     try:
-
         plan = create_change_plan(
             request.project_path,
             request.command,
@@ -375,14 +362,12 @@ def plan_change(
         return plan
 
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error),
         )
 
     except NotADirectoryError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
@@ -398,9 +383,7 @@ def plan_change(
 def propose_change(
     request: CodeModificationRequest,
 ):
-
     try:
-
         result = generate_code_changes(
             request.project_path,
             request.command,
@@ -409,14 +392,12 @@ def propose_change(
         return result
 
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error),
         )
 
     except NotADirectoryError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
@@ -432,13 +413,7 @@ def propose_change(
 def apply_change(
     request: ApplyChangeRequest,
 ):
-
-    # -----------------------------------------------------
-    # Safety check
-    # -----------------------------------------------------
-
     if not request.approved:
-
         raise HTTPException(
             status_code=400,
             detail=(
@@ -448,11 +423,33 @@ def apply_change(
             ),
         )
 
-    # -----------------------------------------------------
-    # Apply patch
-    # -----------------------------------------------------
+    backup_path = None
 
     try:
+        # -------------------------------------------------
+        # Step 1: Validate patch first
+        # -------------------------------------------------
+
+        validate_patch(
+            project_path=request.project_path,
+            file_path=request.file_path,
+            operation=request.operation,
+            anchor=request.anchor,
+            code=request.code,
+        )
+
+        # -------------------------------------------------
+        # Step 2: Create backup only after validation
+        # -------------------------------------------------
+
+        backup_path = create_backup(
+            project_path=request.project_path,
+            file_path=request.file_path,
+        )
+
+        # -------------------------------------------------
+        # Step 3: Apply validated patch
+        # -------------------------------------------------
 
         result = apply_patch(
             project_path=request.project_path,
@@ -462,32 +459,57 @@ def apply_change(
             code=request.code,
         )
 
-        return result
+        return {
+            "status": "success",
+            "message": (
+                "Change applied successfully."
+            ),
+            "backup_path": backup_path,
+            "result": result,
+        }
 
     except PermissionError as error:
-
         raise HTTPException(
             status_code=403,
             detail=str(error),
         )
 
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error),
         )
 
     except IsADirectoryError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
         )
 
     except ValueError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
+        )
+
+    except Exception:
+        # -------------------------------------------------
+        # Restore original file if application fails
+        # -------------------------------------------------
+
+        if backup_path:
+            try:
+                restore_backup(
+                    project_path=request.project_path,
+                    file_path=request.file_path,
+                )
+            except Exception:
+                pass
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The change could not be applied "
+                "and the original file was restored."
+            ),
         )

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def apply_patch(
+def validate_patch(
     project_path: str,
     file_path: str,
     operation: str,
@@ -9,18 +9,19 @@ def apply_patch(
     code: str,
 ) -> dict:
     """
-    Apply a validated code patch to a project file.
+    Validate a patch without modifying the target file.
 
-    The patch is only applied when:
-    - The target file exists.
-    - The target file is inside the project.
-    - The requested operation is supported.
-    - The anchor exists when required.
-    - The code is not already present.
+    Returns the current file content and the
+    validated target path.
     """
 
-    root = Path(project_path).resolve()
-    target = (root / file_path).resolve()
+    root = Path(
+        project_path
+    ).resolve()
+
+    target = (
+        root / file_path
+    ).resolve()
 
     # Security: prevent path traversal
 
@@ -45,11 +46,11 @@ def apply_patch(
             f"Path is not a file: {file_path}"
         )
 
-    # Read existing content
+    current_content = read_text_file(
+        target
+    )
 
-    current_content = read_text_file(target)
-
-    # Validate operation
+    # Operation validation
 
     if operation not in {
         "insert",
@@ -60,7 +61,7 @@ def apply_patch(
             f"Unsupported operation: {operation}"
         )
 
-    # Prevent duplicate code
+    # Duplicate protection
 
     normalized_code = code.strip()
 
@@ -74,14 +75,17 @@ def apply_patch(
             "duplicate code."
         )
 
-    # Insert operation
+    # Anchor validation
 
-    if operation == "insert":
+    if operation in {
+        "insert",
+        "replace",
+    }:
 
         if not anchor:
             raise ValueError(
-                "Insert operation requires "
-                "an anchor."
+                f"{operation.capitalize()} "
+                "operation requires an anchor."
             )
 
         if anchor not in current_content:
@@ -89,6 +93,40 @@ def apply_patch(
                 "The specified anchor was not "
                 "found in the file."
             )
+
+    return {
+        "target": target,
+        "current_content": current_content,
+    }
+
+
+def apply_patch(
+    project_path: str,
+    file_path: str,
+    operation: str,
+    anchor: str,
+    code: str,
+) -> dict:
+    """
+    Validate and apply a patch to a project file.
+    """
+
+    validation = validate_patch(
+        project_path=project_path,
+        file_path=file_path,
+        operation=operation,
+        anchor=anchor,
+        code=code,
+    )
+
+    target = validation["target"]
+    current_content = validation[
+        "current_content"
+    ]
+
+    # Build new content
+
+    if operation == "insert":
 
         new_content = current_content.replace(
             anchor,
@@ -96,29 +134,13 @@ def apply_patch(
             1,
         )
 
-    # Replace operation
-
     elif operation == "replace":
-
-        if not anchor:
-            raise ValueError(
-                "Replace operation requires "
-                "an anchor."
-            )
-
-        if anchor not in current_content:
-            raise ValueError(
-                "The specified anchor was not "
-                "found in the file."
-            )
 
         new_content = current_content.replace(
             anchor,
             code,
             1,
         )
-
-    # Append operation
 
     else:
 
