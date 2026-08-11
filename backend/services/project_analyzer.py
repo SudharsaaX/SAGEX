@@ -40,13 +40,72 @@ def scan_project(project_path: str) -> dict:
     files.sort()
 
     project_info = detect_project_info(root)
+    important_files = identify_important_files(files)
 
     return {
         "project_path": str(root),
         "total_files": len(files),
         "files": files,
         "project_info": project_info,
+        "important_files": important_files,
     }
+
+
+def identify_important_files(files: list[str]) -> dict:
+    important = {
+        "entry_points": [],
+        "configuration": [],
+        "documentation": [],
+        "api_files": [],
+        "service_files": [],
+    }
+
+    for file in files:
+        path = Path(file)
+        name = path.name.lower()
+        parts = {part.lower() for part in path.parts}
+
+        if name in {
+            "main.py",
+            "app.py",
+            "server.py",
+            "index.js",
+            "index.jsx",
+            "index.ts",
+            "index.tsx",
+        }:
+            important["entry_points"].append(file)
+
+        if name in {
+            "requirements.txt",
+            "pyproject.toml",
+            "package.json",
+            "package-lock.json",
+            "vite.config.js",
+            "vite.config.ts",
+            "dockerfile",
+            ".env.example",
+        }:
+            important["configuration"].append(file)
+
+        if name.lower() in {
+            "readme.md",
+            "readme.txt",
+        }:
+            important["documentation"].append(file)
+
+        if (
+            "api" in parts
+            or "routes" in parts
+            or "routers" in parts
+            or name in {"main.py", "server.py", "api.py"}
+        ):
+            important["api_files"].append(file)
+
+        if "services" in parts or "service" in parts:
+            important["service_files"].append(file)
+
+    return important
 
 
 def detect_project_info(root: Path) -> dict:
@@ -58,7 +117,10 @@ def detect_project_info(root: Path) -> dict:
     return detect_python_project(root)
 
 
-def detect_javascript_project(root: Path, package_json_path: Path) -> dict:
+def detect_javascript_project(
+    root: Path,
+    package_json_path: Path,
+) -> dict:
     try:
         package_text = read_text_file(package_json_path)
         package_data = json.loads(package_text)
@@ -101,7 +163,9 @@ def detect_python_project(root: Path) -> dict:
 
     if requirements_path.exists():
         try:
-            dependencies_text = read_text_file(requirements_path).lower()
+            dependencies_text = read_text_file(
+                requirements_path
+            ).lower()
         except (OSError, UnicodeDecodeError):
             dependencies_text = ""
 
