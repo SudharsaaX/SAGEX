@@ -1,8 +1,9 @@
 import ollama
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend.services.file_reader import read_project_file
 from backend.services.project_analyzer import scan_project
 
 
@@ -19,6 +20,11 @@ class CommandRequest(BaseModel):
 
 class ProjectAnalysisRequest(BaseModel):
     project_path: str
+
+
+class FileReadRequest(BaseModel):
+    project_path: str
+    file_path: str
 
 
 @app.get("/")
@@ -73,9 +79,54 @@ def receive_command(request: CommandRequest):
 
 @app.post("/analyze-project")
 def analyze_project(request: ProjectAnalysisRequest):
-    project = scan_project(request.project_path)
+    try:
+        project = scan_project(request.project_path)
 
-    return {
-        "status": "success",
-        "project": project,
-    }
+        return {
+            "status": "success",
+            "project": project,
+        }
+
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+
+@app.post("/read-file")
+def read_file(request: FileReadRequest):
+    try:
+        file = read_project_file(
+            request.project_path,
+            request.file_path,
+        )
+
+        return {
+            "status": "success",
+            "file": file,
+        }
+
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except IsADirectoryError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
