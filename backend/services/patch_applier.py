@@ -11,21 +11,18 @@ def apply_patch(
     """
     Apply a validated code patch to a project file.
 
-    This function modifies the file only when
-    the patch has passed validation.
+    The patch is only applied when:
+    - The target file exists.
+    - The target file is inside the project.
+    - The requested operation is supported.
+    - The anchor exists when required.
+    - The code is not already present.
     """
 
-    root = Path(
-        project_path
-    ).resolve()
+    root = Path(project_path).resolve()
+    target = (root / file_path).resolve()
 
-    target = (
-        root / file_path
-    ).resolve()
-
-    # -----------------------------------------
     # Security: prevent path traversal
-    # -----------------------------------------
 
     try:
         target.relative_to(root)
@@ -36,9 +33,7 @@ def apply_patch(
             "the project directory."
         )
 
-    # -----------------------------------------
-    # File must exist
-    # -----------------------------------------
+    # File validation
 
     if not target.exists():
         raise FileNotFoundError(
@@ -50,17 +45,11 @@ def apply_patch(
             f"Path is not a file: {file_path}"
         )
 
-    # -----------------------------------------
     # Read existing content
-    # -----------------------------------------
 
-    current_content = read_text_file(
-        target
-    )
+    current_content = read_text_file(target)
 
-    # -----------------------------------------
     # Validate operation
-    # -----------------------------------------
 
     if operation not in {
         "insert",
@@ -71,9 +60,21 @@ def apply_patch(
             f"Unsupported operation: {operation}"
         )
 
-    # -----------------------------------------
-    # Apply patch
-    # -----------------------------------------
+    # Prevent duplicate code
+
+    normalized_code = code.strip()
+
+    if normalized_code and (
+        normalized_code in current_content
+    ):
+        raise ValueError(
+            "The proposed code already exists "
+            "in the target file. "
+            "Patch rejected to prevent "
+            "duplicate code."
+        )
+
+    # Insert operation
 
     if operation == "insert":
 
@@ -89,13 +90,13 @@ def apply_patch(
                 "found in the file."
             )
 
-        new_content = (
-            current_content.replace(
-                anchor,
-                anchor + "\n" + code,
-                1,
-            )
+        new_content = current_content.replace(
+            anchor,
+            anchor + "\n" + code,
+            1,
         )
+
+    # Replace operation
 
     elif operation == "replace":
 
@@ -111,16 +112,16 @@ def apply_patch(
                 "found in the file."
             )
 
-        new_content = (
-            current_content.replace(
-                anchor,
-                code,
-                1,
-            )
+        new_content = current_content.replace(
+            anchor,
+            code,
+            1,
         )
 
+    # Append operation
+
     else:
-        # append
+
         new_content = (
             current_content.rstrip()
             + "\n\n"
@@ -128,9 +129,7 @@ def apply_patch(
             + "\n"
         )
 
-    # -----------------------------------------
     # Write modified content
-    # -----------------------------------------
 
     target.write_text(
         new_content,
