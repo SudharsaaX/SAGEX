@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 
@@ -38,8 +39,161 @@ def scan_project(project_path: str) -> dict:
 
     files.sort()
 
+    project_info = detect_project_info(root)
+
     return {
         "project_path": str(root),
         "total_files": len(files),
         "files": files,
+        "project_info": project_info,
     }
+
+
+def detect_project_info(root: Path) -> dict:
+    package_json_path = root / "package.json"
+
+    if package_json_path.exists():
+        return detect_javascript_project(root, package_json_path)
+
+    return detect_python_project(root)
+
+
+def detect_javascript_project(root: Path, package_json_path: Path) -> dict:
+    try:
+        package_text = read_text_file(package_json_path)
+        package_data = json.loads(package_text)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {
+            "language": "JavaScript",
+            "package_manager": detect_package_manager(root),
+            "framework": None,
+            "package_file": "package.json",
+        }
+
+    dependencies = {
+        **package_data.get("dependencies", {}),
+        **package_data.get("devDependencies", {}),
+    }
+
+    framework = detect_javascript_framework(dependencies)
+
+    return {
+        "language": "JavaScript",
+        "package_manager": detect_package_manager(root),
+        "framework": framework,
+        "package_file": "package.json",
+    }
+
+
+def detect_python_project(root: Path) -> dict:
+    requirements_path = root / "requirements.txt"
+    pyproject_path = root / "pyproject.toml"
+
+    if not requirements_path.exists() and not pyproject_path.exists():
+        return {
+            "language": None,
+            "package_manager": None,
+            "framework": None,
+            "package_file": None,
+        }
+
+    dependencies_text = ""
+
+    if requirements_path.exists():
+        try:
+            dependencies_text = read_text_file(requirements_path).lower()
+        except (OSError, UnicodeDecodeError):
+            dependencies_text = ""
+
+    if pyproject_path.exists():
+        try:
+            dependencies_text += "\n" + read_text_file(
+                pyproject_path
+            ).lower()
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    framework = detect_python_framework(dependencies_text)
+
+    package_file = None
+
+    if pyproject_path.exists():
+        package_file = "pyproject.toml"
+    elif requirements_path.exists():
+        package_file = "requirements.txt"
+
+    return {
+        "language": "Python",
+        "package_manager": "pip",
+        "framework": framework,
+        "package_file": package_file,
+    }
+
+
+def read_text_file(path: Path) -> str:
+    encodings = [
+        "utf-8",
+        "utf-8-sig",
+        "utf-16",
+        "utf-16-le",
+        "utf-16-be",
+    ]
+
+    for encoding in encodings:
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+
+    raise UnicodeDecodeError(
+        "unknown",
+        b"",
+        0,
+        1,
+        f"Unable to decode text file: {path}",
+    )
+
+
+def detect_package_manager(root: Path) -> str:
+    if (root / "pnpm-lock.yaml").exists():
+        return "pnpm"
+
+    if (root / "yarn.lock").exists():
+        return "yarn"
+
+    if (root / "package-lock.json").exists():
+        return "npm"
+
+    return "npm"
+
+
+def detect_javascript_framework(dependencies: dict) -> str | None:
+    if "next" in dependencies:
+        return "Next.js"
+
+    if "react" in dependencies:
+        return "React"
+
+    if "vue" in dependencies:
+        return "Vue"
+
+    if "angular" in dependencies or "@angular/core" in dependencies:
+        return "Angular"
+
+    if "svelte" in dependencies:
+        return "Svelte"
+
+    return None
+
+
+def detect_python_framework(dependencies_text: str) -> str | None:
+    if "fastapi" in dependencies_text:
+        return "FastAPI"
+
+    if "django" in dependencies_text:
+        return "Django"
+
+    if "flask" in dependencies_text:
+        return "Flask"
+
+    return None
