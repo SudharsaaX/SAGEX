@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend.services.project_analyzer import scan_project
+
 
 app = FastAPI(
     title="SAGE",
@@ -13,6 +15,10 @@ app = FastAPI(
 
 class CommandRequest(BaseModel):
     command: str
+
+
+class ProjectAnalysisRequest(BaseModel):
+    project_path: str
 
 
 @app.get("/")
@@ -63,3 +69,13 @@ def receive_command(request: CommandRequest):
         generate_response(),
         media_type="text/plain",
     )
+
+
+@app.post("/analyze-project")
+def analyze_project(request: ProjectAnalysisRequest):
+    project = scan_project(request.project_path)
+
+    return {
+        "status": "success",
+        "project": project,
+    }
