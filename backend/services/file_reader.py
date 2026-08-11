@@ -14,20 +14,30 @@ IGNORED_DIRECTORIES = {
 }
 
 
-def read_project_file(project_path: str, file_path: str) -> dict:
+def read_project_file(
+    project_path: str,
+    file_path: str,
+) -> dict:
+
     root = Path(project_path).resolve()
+
     requested_file = Path(file_path)
 
     if requested_file.is_absolute():
         target = requested_file.resolve()
+
     else:
-        target = (root / requested_file).resolve()
+        target = (
+            root / requested_file
+        ).resolve()
 
     try:
         target.relative_to(root)
+
     except ValueError:
         raise PermissionError(
-            "The requested file is outside the project directory."
+            "The requested file is outside "
+            "the project directory."
         )
 
     if any(
@@ -35,7 +45,8 @@ def read_project_file(project_path: str, file_path: str) -> dict:
         for part in target.relative_to(root).parts
     ):
         raise PermissionError(
-            "Access to this project directory is not allowed."
+            "Access to this project directory "
+            "is not allowed."
         )
 
     if not target.exists():
@@ -51,7 +62,9 @@ def read_project_file(project_path: str, file_path: str) -> dict:
     content = read_text_file(target)
 
     return {
-        "file_path": str(target.relative_to(root)),
+        "file_path": str(
+            target.relative_to(root)
+        ),
         "size": len(content),
         "content": content,
     }
@@ -68,7 +81,10 @@ def read_text_file(path: Path) -> str:
 
     for encoding in encodings:
         try:
-            return path.read_text(encoding=encoding)
+            return path.read_text(
+                encoding=encoding
+            )
+
         except UnicodeDecodeError:
             continue
 

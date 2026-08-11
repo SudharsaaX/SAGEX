@@ -19,10 +19,14 @@ def scan_project(project_path: str) -> dict:
     root = Path(project_path).resolve()
 
     if not root.exists():
-        raise FileNotFoundError(f"Project path does not exist: {root}")
+        raise FileNotFoundError(
+            f"Project path does not exist: {root}"
+        )
 
     if not root.is_dir():
-        raise NotADirectoryError(f"Project path is not a directory: {root}")
+        raise NotADirectoryError(
+            f"Project path is not a directory: {root}"
+        )
 
     files = []
 
@@ -32,7 +36,10 @@ def scan_project(project_path: str) -> dict:
 
         relative_path = path.relative_to(root)
 
-        if any(part in IGNORED_DIRECTORIES for part in relative_path.parts):
+        if any(
+            part in IGNORED_DIRECTORIES
+            for part in relative_path.parts
+        ):
             continue
 
         files.append(str(relative_path))
@@ -88,7 +95,7 @@ def identify_important_files(files: list[str]) -> dict:
         }:
             important["configuration"].append(file)
 
-        if name.lower() in {
+        if name in {
             "readme.md",
             "readme.txt",
         }:
@@ -98,11 +105,18 @@ def identify_important_files(files: list[str]) -> dict:
             "api" in parts
             or "routes" in parts
             or "routers" in parts
-            or name in {"main.py", "server.py", "api.py"}
+            or name in {
+                "main.py",
+                "server.py",
+                "api.py",
+            }
         ):
             important["api_files"].append(file)
 
-        if "services" in parts or "service" in parts:
+        if (
+            "services" in parts
+            or "service" in parts
+        ):
             important["service_files"].append(file)
 
     return important
@@ -112,7 +126,10 @@ def detect_project_info(root: Path) -> dict:
     package_json_path = root / "package.json"
 
     if package_json_path.exists():
-        return detect_javascript_project(root, package_json_path)
+        return detect_javascript_project(
+            root,
+            package_json_path,
+        )
 
     return detect_python_project(root)
 
@@ -122,9 +139,17 @@ def detect_javascript_project(
     package_json_path: Path,
 ) -> dict:
     try:
-        package_text = read_text_file(package_json_path)
+        package_text = read_text_file(
+            package_json_path
+        )
+
         package_data = json.loads(package_text)
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+
+    except (
+        json.JSONDecodeError,
+        OSError,
+        UnicodeDecodeError,
+    ):
         return {
             "language": "JavaScript",
             "package_manager": detect_package_manager(root),
@@ -137,7 +162,9 @@ def detect_javascript_project(
         **package_data.get("devDependencies", {}),
     }
 
-    framework = detect_javascript_framework(dependencies)
+    framework = detect_javascript_framework(
+        dependencies
+    )
 
     return {
         "language": "JavaScript",
@@ -151,7 +178,10 @@ def detect_python_project(root: Path) -> dict:
     requirements_path = root / "requirements.txt"
     pyproject_path = root / "pyproject.toml"
 
-    if not requirements_path.exists() and not pyproject_path.exists():
+    if (
+        not requirements_path.exists()
+        and not pyproject_path.exists()
+    ):
         return {
             "language": None,
             "package_manager": None,
@@ -166,23 +196,37 @@ def detect_python_project(root: Path) -> dict:
             dependencies_text = read_text_file(
                 requirements_path
             ).lower()
-        except (OSError, UnicodeDecodeError):
+
+        except (
+            OSError,
+            UnicodeDecodeError,
+        ):
             dependencies_text = ""
 
     if pyproject_path.exists():
         try:
-            dependencies_text += "\n" + read_text_file(
-                pyproject_path
-            ).lower()
-        except (OSError, UnicodeDecodeError):
+            dependencies_text += (
+                "\n"
+                + read_text_file(
+                    pyproject_path
+                ).lower()
+            )
+
+        except (
+            OSError,
+            UnicodeDecodeError,
+        ):
             pass
 
-    framework = detect_python_framework(dependencies_text)
+    framework = detect_python_framework(
+        dependencies_text
+    )
 
     package_file = None
 
     if pyproject_path.exists():
         package_file = "pyproject.toml"
+
     elif requirements_path.exists():
         package_file = "requirements.txt"
 
@@ -205,7 +249,10 @@ def read_text_file(path: Path) -> str:
 
     for encoding in encodings:
         try:
-            return path.read_text(encoding=encoding)
+            return path.read_text(
+                encoding=encoding
+            )
+
         except UnicodeDecodeError:
             continue
 
@@ -231,7 +278,10 @@ def detect_package_manager(root: Path) -> str:
     return "npm"
 
 
-def detect_javascript_framework(dependencies: dict) -> str | None:
+def detect_javascript_framework(
+    dependencies: dict,
+) -> str | None:
+
     if "next" in dependencies:
         return "Next.js"
 
@@ -241,7 +291,10 @@ def detect_javascript_framework(dependencies: dict) -> str | None:
     if "vue" in dependencies:
         return "Vue"
 
-    if "angular" in dependencies or "@angular/core" in dependencies:
+    if (
+        "angular" in dependencies
+        or "@angular/core" in dependencies
+    ):
         return "Angular"
 
     if "svelte" in dependencies:
@@ -250,7 +303,10 @@ def detect_javascript_framework(dependencies: dict) -> str | None:
     return None
 
 
-def detect_python_framework(dependencies_text: str) -> str | None:
+def detect_python_framework(
+    dependencies_text: str,
+) -> str | None:
+
     if "fastapi" in dependencies_text:
         return "FastAPI"
 
