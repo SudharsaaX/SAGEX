@@ -53,8 +53,20 @@ from backend.services.project_analyzer import (
     scan_project,
 )
 
+from backend.services.project_executor import (
+    get_project_logs,
+    get_project_status,
+    infer_start_command,
+    start_project,
+    stop_project,
+)
+
 from backend.services.rollback_manager import (
     rollback_change,
+)
+
+from backend.services.test_runner import (
+    run_project_tests,
 )
 
 from backend.services.workspace_manager import (
@@ -113,6 +125,7 @@ class ApplyChangeRequest(BaseModel):
     anchor: str
     code: str
     approved: bool = False
+    run_tests: bool = False
 
 
 # =========================================================
@@ -1050,45 +1063,131 @@ def apply_change(
                 "backup_path": backup_path,
                 "result": result,
                 "verification": verification,
+                "tests": {
+                    "status": "skipped",
+                    "reason": (
+                        "Syntax verification failed "
+                        "before running tests."
+                    ),
+                },
                 "rollback": rollback_result,
                 "history": history_entry,
             }
 
         # -------------------------------------------------
-        # STEP 6: Record success
+        # STEP 6: Automated Project Tests (Optional)
         # -------------------------------------------------
+
+        tests_result = {
+            "status": "skipped",
+            "reason": (
+                "Automated tests were not requested."
+            ),
+        }
+
+        if request.run_tests:
+
+            tests_result = run_project_tests(
+                project_path=project_path
+            )
+
+            test_status = tests_result.get("status")
+
+            if test_status in {"failed", "timeout"}:
+
+                rollback_result = rollback_change(
+                    project_path=project_path,
+                    file_path=request.file_path,
+                )
+
+                fail_message = (
+                    "Project tests failed. "
+                    "The original file was restored."
+                    if test_status == "failed"
+                    else "Project tests timed out. "
+                    "The original file was restored."
+                )
+
+                history_entry = record_change(
+                    project_path=project_path,
+                    file_path=request.file_path,
+                    operation=request.operation,
+                    status="failed",
+                    verification_status=test_status,
+                    rollback_status=(
+                        rollback_result["status"]
+                    ),
+                    message=fail_message,
+                )
+
+                return {
+                    "status": "failed",
+                    "project_id": request.project_id,
+                    "message": fail_message,
+                    "backup_path": backup_path,
+                    "result": result,
+                    "verification": verification,
+                    "tests": tests_result,
+                    "rollback": rollback_result,
+                    "history": history_entry,
+                }
+
+        # -------------------------------------------------
+        # STEP 7: Record success
+        # -------------------------------------------------
+
+        test_status = tests_result.get("status")
+
+        if test_status == "passed":
+
+            ver_status = "passed"
+            success_msg = (
+                "Change applied, verified, "
+                "and project tests passed."
+            )
+
+        elif test_status == "unsupported":
+
+            ver_status = "unsupported"
+            success_msg = (
+                "Change applied and syntax "
+                "verified, but project tests "
+                "are unsupported."
+            )
+
+        else:
+
+            ver_status = verification["status"]
+            success_msg = (
+                "Change applied and "
+                "verified successfully."
+            )
 
         history_entry = record_change(
             project_path=project_path,
             file_path=request.file_path,
             operation=request.operation,
             status="success",
-            verification_status=(
-                verification["status"]
-            ),
+            verification_status=ver_status,
             rollback_status=None,
-            message=(
-                "Change applied and "
-                "verified successfully."
-            ),
+            message=success_msg,
         )
 
         # -------------------------------------------------
-        # STEP 7: Return success
+        # STEP 8: Return success
         # -------------------------------------------------
 
         return {
             "status": "success",
             "project_id": request.project_id,
-            "message": (
-                "Change applied and "
-                "verified successfully."
-            ),
+            "message": success_msg,
             "backup_path": backup_path,
             "result": result,
             "verification": verification,
+            "tests": tests_result,
             "history": history_entry,
         }
+
 
     except PermissionError as error:
 
@@ -1288,4 +1387,314 @@ def clear_change_history_endpoint(
         raise HTTPException(
             status_code=500,
             detail=str(error),
+        )
+
+
+# =========================================================
+# RUN PROJECT
+# =========================================================
+
+
+@app.post("/projects/{project_id}/run")
+def run_project_endpoint(
+    project_id: str,
+):
+    """
+    Safely infer start command and start the project process
+    in its isolated workspace.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        result = start_project(
+            str(workspace)
+        )
+
+        return {
+            "project_id": project_id,
+            "workspace_path": str(workspace),
+            **result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Project execution failed: "
+                f"{error}"
+            ),
+        )
+
+
+# =========================================================
+# PROJECT EXECUTION STATUS
+# =========================================================
+
+
+@app.get("/projects/{project_id}/status")
+def get_project_status_endpoint(
+    project_id: str,
+):
+    """
+    Get current execution status (running, stopped, failed)
+    for a project process.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        result = get_project_status(
+            str(workspace)
+        )
+
+        return {
+            "project_id": project_id,
+            **result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+# =========================================================
+# STOP PROJECT
+# =========================================================
+
+
+@app.post("/projects/{project_id}/stop")
+def stop_project_endpoint(
+    project_id: str,
+):
+    """
+    Stop a SAGE-managed running project process cleanly.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        result = stop_project(
+            str(workspace)
+        )
+
+        return {
+            "project_id": project_id,
+            **result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+# =========================================================
+# GET PROJECT EXECUTION LOGS
+# =========================================================
+
+
+@app.get("/projects/{project_id}/logs")
+def get_project_logs_endpoint(
+    project_id: str,
+):
+    """
+    Get captured stdout and stderr execution logs for a project.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        result = get_project_logs(
+            str(workspace)
+        )
+
+        return {
+            "project_id": project_id,
+            **result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+# =========================================================
+# RUN PROJECT TESTS
+# =========================================================
+
+
+@app.post("/projects/{project_id}/test")
+def run_project_tests_endpoint(
+    project_id: str,
+):
+    """
+    Safely infer test framework (pytest or npm test) and execute
+    automated project tests in its isolated workspace.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        result = run_project_tests(
+            str(workspace)
+        )
+
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "result": result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Project test execution failed: "
+                f"{error}"
+            ),
         )
