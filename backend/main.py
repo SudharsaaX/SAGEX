@@ -36,6 +36,7 @@ app = FastAPI(
 
 class CommandRequest(BaseModel):
     command: str
+    project_path: str | None = None
 
 
 class ProjectAnalysisRequest(BaseModel):
@@ -65,7 +66,55 @@ def receive_command(
     request: CommandRequest,
 ):
 
+    project_context = None
+
+    if request.project_path:
+
+        try:
+            project_context = build_project_context(
+                request.project_path
+            )
+
+        except FileNotFoundError as error:
+
+            raise HTTPException(
+                status_code=404,
+                detail=str(error),
+            )
+
+        except NotADirectoryError as error:
+
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+            )
+
     def generate_response():
+
+        system_prompt = (
+            "You are SAGE, an AI software "
+            "development assistant. "
+            "Give concise and practical answers. "
+            "When a developer asks for a software "
+            "change, focus on understanding the "
+            "requested change rather than giving "
+            "unnecessary explanations."
+        )
+
+        if project_context:
+
+            system_prompt += (
+                "\n\n"
+                "You have access to the actual "
+                "project context below. "
+                "Use it to answer questions about "
+                "the project. "
+                "Do not invent files, components, "
+                "functions, or dependencies that "
+                "are not present in the context."
+                "\n\n"
+                + project_context["context"]
+            )
 
         response = ollama.chat(
             model="qwen2.5-coder:7b",
@@ -73,21 +122,7 @@ def receive_command(
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are SAGE, an AI "
-                        "software development "
-                        "assistant. "
-
-                        "Give concise and "
-                        "practical answers. "
-
-                        "When a developer asks "
-                        "for a software change, "
-                        "focus on understanding "
-                        "the requested change "
-                        "rather than giving "
-                        "unnecessary explanations."
-                    ),
+                    "content": system_prompt,
                 },
                 {
                     "role": "user",
@@ -100,7 +135,8 @@ def receive_command(
             keep_alive="30m",
 
             options={
-                "num_predict": 300,
+                "num_predict": 250,
+                "num_ctx": 8192,
             },
         )
 
