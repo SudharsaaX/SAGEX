@@ -28,6 +28,10 @@ from backend.services.change_planner import (
     create_change_plan,
 )
 
+from backend.services.change_preview import (
+    generate_change_preview,
+)
+
 from backend.services.change_transaction import (
     run_change_transaction,
 )
@@ -1421,6 +1425,109 @@ def apply_change_set(
                 f"failed: {error}"
             ),
         )
+
+
+# =========================================================
+# PREVIEW CHANGE SET (READ-ONLY IN-MEMORY DIFF)
+# =========================================================
+
+
+@app.post("/preview-change-set")
+def preview_change_set(
+    request: ApplyChangeSetRequest,
+):
+    """
+    Generate a completely read-only in-memory change preview and unified diff
+    for a proposed change set without modifying any project files.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            request.project_id
+        )
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    project_path = str(
+        workspace
+    )
+
+    try:
+
+        changes_list = [
+            item.dict()
+            for item in request.changes
+        ]
+
+        result = generate_change_preview(
+            project_path=project_path,
+            changes=changes_list,
+        )
+
+        return {
+            "status": result.get("status", "success"),
+            "project_id": request.project_id,
+            **result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Change preview generation "
+                f"failed: {error}"
+            ),
+        )
+
 
 
 
