@@ -1,5 +1,9 @@
 from pathlib import Path
 
+from backend.services.file_reader import (
+    read_text_file,
+)
+
 
 def validate_patch(
     project_path: str,
@@ -23,7 +27,9 @@ def validate_patch(
         root / file_path
     ).resolve()
 
+    # -----------------------------------------
     # Security: prevent path traversal
+    # -----------------------------------------
 
     try:
         target.relative_to(root)
@@ -34,7 +40,9 @@ def validate_patch(
             "the project directory."
         )
 
+    # -----------------------------------------
     # File validation
+    # -----------------------------------------
 
     if not target.exists():
         raise FileNotFoundError(
@@ -50,7 +58,9 @@ def validate_patch(
         target
     )
 
+    # -----------------------------------------
     # Operation validation
+    # -----------------------------------------
 
     if operation not in {
         "insert",
@@ -61,7 +71,9 @@ def validate_patch(
             f"Unsupported operation: {operation}"
         )
 
+    # -----------------------------------------
     # Duplicate protection
+    # -----------------------------------------
 
     normalized_code = code.strip()
 
@@ -75,7 +87,9 @@ def validate_patch(
             "duplicate code."
         )
 
+    # -----------------------------------------
     # Anchor validation
+    # -----------------------------------------
 
     if operation in {
         "insert",
@@ -94,6 +108,10 @@ def validate_patch(
                 "found in the file."
             )
 
+    # -----------------------------------------
+    # Validation successful
+    # -----------------------------------------
+
     return {
         "target": target,
         "current_content": current_content,
@@ -109,6 +127,9 @@ def apply_patch(
 ) -> dict:
     """
     Validate and apply a patch to a project file.
+
+    The target file is modified only after
+    all validation checks have passed.
     """
 
     validation = validate_patch(
@@ -119,12 +140,17 @@ def apply_patch(
         code=code,
     )
 
-    target = validation["target"]
+    target = validation[
+        "target"
+    ]
+
     current_content = validation[
         "current_content"
     ]
 
+    # -----------------------------------------
     # Build new content
+    # -----------------------------------------
 
     if operation == "insert":
 
@@ -143,6 +169,7 @@ def apply_patch(
         )
 
     else:
+        # append
 
         new_content = (
             current_content.rstrip()
@@ -151,12 +178,29 @@ def apply_patch(
             + "\n"
         )
 
+    # -----------------------------------------
+    # Safety check
+    # -----------------------------------------
+
+    if new_content == current_content:
+
+        raise ValueError(
+            "The proposed patch would not "
+            "change the file."
+        )
+
+    # -----------------------------------------
     # Write modified content
+    # -----------------------------------------
 
     target.write_text(
         new_content,
         encoding="utf-8",
     )
+
+    # -----------------------------------------
+    # Return result
+    # -----------------------------------------
 
     return {
         "status": "success",
@@ -168,44 +212,3 @@ def apply_patch(
         "content_before": current_content,
         "content_after": new_content,
     }
-
-
-def read_text_file(
-    path: Path,
-) -> str:
-    """
-    Read a text file using common encodings.
-    """
-
-    encodings = [
-        "utf-8",
-        "utf-8-sig",
-        "utf-16",
-        "utf-16-le",
-        "utf-16-be",
-        "cp1252",
-        "latin-1",
-    ]
-
-    last_error = None
-
-    for encoding in encodings:
-
-        try:
-            return path.read_text(
-                encoding=encoding
-            )
-
-        except UnicodeDecodeError as error:
-            last_error = error
-
-    raise UnicodeDecodeError(
-        "unknown",
-        b"",
-        0,
-        1,
-        (
-            "Could not decode file using "
-            "supported encodings."
-        ),
-    ) from last_error
