@@ -15,6 +15,10 @@ from backend.services.change_planner import (
     create_change_plan,
 )
 
+from backend.services.code_modifier import (
+    generate_code_changes,
+)
+
 from backend.services.context_builder import (
     build_project_context,
 )
@@ -57,6 +61,11 @@ class ChangePlanRequest(BaseModel):
     command: str
 
 
+class CodeModificationRequest(BaseModel):
+    project_path: str
+    command: str
+
+
 @app.get("/")
 def root():
     return {
@@ -78,8 +87,10 @@ def receive_command(
 
     if request.project_path:
         try:
-            project_context = build_project_context(
-                request.project_path
+            project_context = (
+                build_project_context(
+                    request.project_path
+                )
             )
 
         except FileNotFoundError as error:
@@ -129,7 +140,9 @@ def receive_command(
                 "the context."
 
                 "\n\n"
-                + project_context["context"]
+                + project_context[
+                    "context"
+                ]
             )
 
         response = ollama.chat(
@@ -265,6 +278,31 @@ def plan_change(
         )
 
         return plan
+
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+
+@app.post("/propose-change")
+def propose_change(
+    request: CodeModificationRequest,
+):
+    try:
+        result = generate_code_changes(
+            request.project_path,
+            request.command,
+        )
+
+        return result
 
     except FileNotFoundError as error:
         raise HTTPException(
