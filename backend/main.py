@@ -1,4 +1,6 @@
+import ollama
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 
@@ -25,8 +27,39 @@ def root():
 
 @app.post("/command")
 def receive_command(request: CommandRequest):
-    return {
-        "status": "received",
-        "command": request.command,
-        "message": f"SAGE received your command: {request.command}",
-    }
+    def generate_response():
+        response = ollama.chat(
+            model="qwen2.5-coder:7b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are SAGE, an AI software development assistant. "
+                        "Give concise and practical answers. "
+                        "When a developer asks for a software change, "
+                        "focus on understanding the requested change "
+                        "rather than giving unnecessary explanations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": request.command,
+                },
+            ],
+            stream=True,
+            keep_alive="30m",
+            options={
+                "num_predict": 300,
+            },
+        )
+
+        for chunk in response:
+            content = chunk["message"]["content"]
+
+            if content:
+                yield content
+
+    return StreamingResponse(
+        generate_response(),
+        media_type="text/plain",
+    )
