@@ -28,6 +28,10 @@ from backend.services.change_planner import (
     create_change_plan,
 )
 
+from backend.services.change_transaction import (
+    run_change_transaction,
+)
+
 from backend.services.change_verifier import (
     verify_changed_file,
 )
@@ -126,6 +130,22 @@ class ApplyChangeRequest(BaseModel):
     code: str
     approved: bool = False
     run_tests: bool = False
+
+
+class ChangeSetItem(BaseModel):
+    file_path: str
+    operation: str
+    anchor: str = ""
+    code: str = ""
+    reason: str | None = None
+
+
+class ApplyChangeSetRequest(BaseModel):
+    project_id: str
+    changes: list[ChangeSetItem]
+    approved: bool = False
+    run_tests: bool = False
+
 
 
 # =========================================================
@@ -1286,6 +1306,122 @@ def apply_change(
                 f"{error}"
             ),
         )
+
+
+# =========================================================
+# APPLY CHANGE SET (MULTI-FILE ATOMIC TRANSACTION)
+# =========================================================
+
+
+@app.post("/apply-change-set")
+def apply_change_set(
+    request: ApplyChangeSetRequest,
+):
+    """
+    Validate, backup, apply, verify, and optionally test a multi-file
+    change set as a single atomic transaction.
+    If ANY step fails, ALL modified files are automatically rolled back.
+    """
+
+    if not request.approved:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Change set was not approved. "
+                "Set approved to true after "
+                "reviewing the proposed changes."
+            ),
+        )
+
+    try:
+
+        workspace = get_workspace(
+            request.project_id
+        )
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    project_path = str(
+        workspace
+    )
+
+    try:
+
+        changes_list = [
+            item.dict()
+            for item in request.changes
+        ]
+
+        result = run_change_transaction(
+            project_path=project_path,
+            changes=changes_list,
+            run_tests=request.run_tests,
+        )
+
+        return {
+            "status": result.get("status", "success"),
+            "project_id": request.project_id,
+            **result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Multi-file change transaction "
+                f"failed: {error}"
+            ),
+        )
+
 
 
 # =========================================================

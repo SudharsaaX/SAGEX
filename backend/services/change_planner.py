@@ -109,10 +109,21 @@ Important rules:
         content
     )
 
+    valid_context_files = set(project_context.get("files", []))
+    if isinstance(plan.get("relevant_files"), list):
+        filtered_files = []
+        for file_info in plan["relevant_files"]:
+            if isinstance(file_info, dict) and file_info.get("file_path"):
+                fp = file_info["file_path"]
+                if fp in valid_context_files or (Path(project_path) / fp).exists():
+                    filtered_files.append(file_info)
+        plan["relevant_files"] = filtered_files
+
     return {
         "status": "success",
         "plan": plan,
     }
+
 
 
 def parse_plan_response(

@@ -75,6 +75,7 @@ def record_change(
     verification_status: str | None = None,
     rollback_status: str | None = None,
     message: str | None = None,
+    files: list[str] | None = None,
 ) -> dict:
     """
     Record a SAGE code change in change history.
@@ -112,6 +113,7 @@ def record_change(
             timezone.utc
         ).isoformat(),
         "file_path": file_path,
+        "files": files if files is not None else [file_path],
         "operation": operation,
         "status": status,
         "verification": (
@@ -122,6 +124,7 @@ def record_change(
         ),
         "message": message,
     }
+
 
     history.append(
         entry
