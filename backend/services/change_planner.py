@@ -11,6 +11,13 @@ def create_change_plan(
     project_path: str,
     command: str,
 ) -> dict:
+    """
+    Create a structured change plan for a project.
+
+    This function only analyzes the requested change.
+    It does not modify any project files.
+    """
+
     project_context = build_project_context(
         project_path
     )
@@ -36,24 +43,24 @@ Instead, determine:
 Return ONLY valid JSON using exactly this structure:
 
 {
-  "summary": "short description of the requested change",
-  "relevant_files": [
-    {
-      "file_path": "path/to/file",
-      "reason": "why this file is relevant"
-    }
-  ],
-  "changes": [
-    "specific change 1",
-    "specific change 2"
-  ],
-  "unchanged": [
-    "important existing behavior to preserve"
-  ],
-  "verification": [
-    "verification step 1",
-    "verification step 2"
-  ]
+    "summary": "short description of the requested change",
+    "relevant_files": [
+        {
+            "file_path": "path/to/file",
+            "reason": "why this file is relevant"
+        }
+    ],
+    "changes": [
+        "specific change 1",
+        "specific change 2"
+    ],
+    "unchanged": [
+        "important existing behavior to preserve"
+    ],
+    "verification": [
+        "verification step 1",
+        "verification step 2"
+    ]
 }
 
 Important rules:
@@ -63,6 +70,7 @@ Important rules:
 - Do not modify files.
 - Keep the plan practical and concise.
 - If the request is unclear, mention the uncertainty in the summary.
+- Return JSON only.
 """
 
     user_prompt = (
@@ -92,9 +100,14 @@ Important rules:
         },
     )
 
-    content = response["message"]["content"].strip()
+    content = (
+        response["message"]["content"]
+        .strip()
+    )
 
-    plan = parse_plan_response(content)
+    plan = parse_plan_response(
+        content
+    )
 
     return {
         "status": "success",
@@ -102,24 +115,51 @@ Important rules:
     }
 
 
-def parse_plan_response(content: str) -> dict:
+def parse_plan_response(
+    content: str,
+) -> dict:
+    """
+    Parse the JSON returned by the local LLM.
+
+    Handles responses where the model accidentally
+    wraps JSON inside a markdown code block.
+    """
+
     cleaned = content.strip()
 
+    # -----------------------------------------------------
+    # Remove markdown code fences
+    # -----------------------------------------------------
+
     if cleaned.startswith("```"):
+
         lines = cleaned.splitlines()
 
         if lines:
             lines = lines[1:]
 
-        if lines and lines[-1].strip() == "```":
+        if (
+            lines
+            and lines[-1].strip() == "```"
+        ):
             lines = lines[:-1]
 
-        cleaned = "\n".join(lines).strip()
+        cleaned = "\n".join(
+            lines
+        ).strip()
+
+    # -----------------------------------------------------
+    # Parse JSON
+    # -----------------------------------------------------
 
     try:
-        plan = json.loads(cleaned)
+
+        plan = json.loads(
+            cleaned
+        )
 
     except json.JSONDecodeError:
+
         return {
             "summary": content,
             "relevant_files": [],
@@ -128,5 +168,52 @@ def parse_plan_response(content: str) -> dict:
             "verification": [],
             "parse_error": True,
         }
+
+    # -----------------------------------------------------
+    # Validate basic structure
+    # -----------------------------------------------------
+
+    if not isinstance(
+        plan,
+        dict,
+    ):
+
+        return {
+            "summary": content,
+            "relevant_files": [],
+            "changes": [],
+            "unchanged": [],
+            "verification": [],
+            "parse_error": True,
+        }
+
+    # -----------------------------------------------------
+    # Ensure expected fields exist
+    # -----------------------------------------------------
+
+    plan.setdefault(
+        "summary",
+        "",
+    )
+
+    plan.setdefault(
+        "relevant_files",
+        [],
+    )
+
+    plan.setdefault(
+        "changes",
+        [],
+    )
+
+    plan.setdefault(
+        "unchanged",
+        [],
+    )
+
+    plan.setdefault(
+        "verification",
+        [],
+    )
 
     return plan

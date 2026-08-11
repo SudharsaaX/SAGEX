@@ -242,15 +242,23 @@ def parse_patch_response(
     content: str,
 ) -> dict:
     """
-    Parse Qwen's JSON response safely.
+    Parse Qwen's proposed patch safely.
+
+    Supports:
+    - Strict JSON
+    - JSON embedded inside extra text
+    - Python-style dictionary output from local models
+      using single quotes
     """
 
     cleaned = content.strip()
 
-    # Remove Markdown fences if the model
-    # ignores the instruction.
+    # -----------------------------------------
+    # Remove Markdown code fences
+    # -----------------------------------------
+
     cleaned = re.sub(
-        r"^```(?:json)?\s*",
+        r"^```(?:json|python)?\s*",
         "",
         cleaned,
         flags=re.IGNORECASE,
@@ -264,42 +272,73 @@ def parse_patch_response(
 
     cleaned = cleaned.strip()
 
+    # -----------------------------------------
+    # Extract the outer object if the model
+    # added text before or after the response.
+    # -----------------------------------------
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+
+    if start != -1 and end != -1 and end > start:
+        candidate = cleaned[start:end + 1]
+    else:
+        candidate = cleaned
+
+    # -----------------------------------------
+    # Try standard JSON first.
+    # -----------------------------------------
+
+    result = None
+
     try:
-        result = json.loads(
-            cleaned
-        )
+        result = json.loads(candidate)
 
     except json.JSONDecodeError:
+        pass
 
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
+    # -----------------------------------------
+    # Try Python literal syntax.
+    #
+    # This handles Qwen output such as:
+    #
+    # "code": 'print("Hello from SAGE AI")'
+    #
+    # which is not valid JSON but is a valid
+    # Python dictionary literal.
+    # -----------------------------------------
 
-        if start == -1 or end == -1:
-            return invalid_patch(
-                content
-            )
-
-        candidate = cleaned[
-            start:end + 1
-        ]
+    if result is None:
 
         try:
-            result = json.loads(
-                candidate
+            result = ast.literal_eval(candidate)
+
+        except (
+            ValueError,
+            SyntaxError,
+        ):
+            return invalid_patch(
+                content,
+                "Could not parse Qwen response as JSON "
+                "or a Python-style dictionary.",
             )
 
-        except json.JSONDecodeError:
-            return invalid_patch(
-                content
-            )
+    # -----------------------------------------
+    # Result must be a dictionary.
+    # -----------------------------------------
 
     if not isinstance(
         result,
         dict,
     ):
         return invalid_patch(
-            content
+            content,
+            "Qwen response is not a valid patch object.",
         )
+
+    # -----------------------------------------
+    # Required fields
+    # -----------------------------------------
 
     required_fields = [
         "operation",
@@ -309,14 +348,46 @@ def parse_patch_response(
     ]
 
     for field in required_fields:
+
         if field not in result:
+
             return invalid_patch(
                 content,
                 f"Missing required field: {field}",
             )
 
+    # -----------------------------------------
+    # Validate field types
+    # -----------------------------------------
+
+    for field in required_fields:
+
+        if not isinstance(
+            result[field],
+            str,
+        ):
+
+            return invalid_patch(
+                content,
+                f"Patch field '{field}' must be a string.",
+            )
+
+    # -----------------------------------------
+    # Normalize operation
+    # -----------------------------------------
+
+    operation = (
+        result["operation"]
+        .strip()
+        .lower()
+    )
+
+    # -----------------------------------------
+    # Return normalized patch
+    # -----------------------------------------
+
     return {
-        "operation": result["operation"],
+        "operation": operation,
         "anchor": clean_generated_text(
             result["anchor"]
         ),

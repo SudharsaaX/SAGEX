@@ -1,15 +1,18 @@
+from pathlib import Path
+
 import ollama
 
 from fastapi import (
     FastAPI,
+    File,
     HTTPException,
+    UploadFile,
 )
 
-from fastapi.responses import (
-    StreamingResponse,
-)
+from fastapi.responses import StreamingResponse
 
 from pydantic import BaseModel
+
 
 from backend.services.backup_manager import (
     create_backup,
@@ -54,25 +57,34 @@ from backend.services.rollback_manager import (
     rollback_change,
 )
 
+from backend.services.workspace_manager import (
+    create_workspace,
+    extract_project_zip,
+    get_workspace,
+)
+
+
+# =========================================================
+# APPLICATION
+# =========================================================
 
 app = FastAPI(
     title="SAGE",
     description=(
-        "Software Assistant for "
-        "Guidance & Execution"
+        "Software Assistant for Guidance & Execution"
     ),
     version="0.1.0",
 )
 
 
 # =========================================================
-# Request Models
+# REQUEST MODELS
 # =========================================================
 
 
 class CommandRequest(BaseModel):
+    project_id: str
     command: str
-    project_path: str | None = None
 
 
 class ProjectAnalysisRequest(BaseModel):
@@ -85,17 +97,17 @@ class FileReadRequest(BaseModel):
 
 
 class ChangePlanRequest(BaseModel):
-    project_path: str
+    project_id: str
     command: str
 
 
 class CodeModificationRequest(BaseModel):
-    project_path: str
+    project_id: str
     command: str
 
 
 class ApplyChangeRequest(BaseModel):
-    project_path: str
+    project_id: str
     file_path: str
     operation: str
     anchor: str
@@ -104,7 +116,7 @@ class ApplyChangeRequest(BaseModel):
 
 
 # =========================================================
-# Root Endpoint
+# ROOT
 # =========================================================
 
 
@@ -115,14 +127,13 @@ def root():
         "version": app.version,
         "status": "running",
         "message": (
-            "Software Assistant for "
-            "Guidance & Execution"
+            "Software Assistant for Guidance & Execution"
         ),
     }
 
 
 # =========================================================
-# Health Endpoint
+# HEALTH
 # =========================================================
 
 
@@ -132,14 +143,12 @@ def health_check():
         "name": "SAGE",
         "version": app.version,
         "status": "healthy",
-        "message": (
-            "SAGE application is running."
-        ),
+        "message": "SAGE application is running.",
     }
 
 
 # =========================================================
-# Version Endpoint
+# VERSION
 # =========================================================
 
 
@@ -152,7 +161,308 @@ def version_check():
 
 
 # =========================================================
-# AI Command Endpoint
+# UPLOAD PROJECT
+# =========================================================
+
+
+@app.post("/projects/upload")
+async def upload_project(
+    file: UploadFile = File(...),
+):
+    """
+    Upload a project ZIP file and create
+    an isolated SAGE workspace.
+    """
+
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="No project file was provided.",
+        )
+
+    filename = file.filename
+
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only ZIP project uploads "
+                "are currently supported."
+            ),
+        )
+
+    temporary_zip = None
+
+    try:
+        # -------------------------------------------------
+        # Create isolated workspace
+        # -------------------------------------------------
+
+        workspace_info = create_workspace(
+            Path(filename).stem
+        )
+
+        workspace_path = Path(
+            workspace_info["workspace_path"]
+        )
+
+        # -------------------------------------------------
+        # Save uploaded ZIP temporarily
+        # -------------------------------------------------
+
+        temporary_zip = (
+            workspace_path
+            / "_uploaded_project.zip"
+        )
+
+        with temporary_zip.open("wb") as destination:
+
+            while True:
+
+                chunk = await file.read(
+                    1024 * 1024
+                )
+
+                if not chunk:
+                    break
+
+                destination.write(chunk)
+
+        # -------------------------------------------------
+        # Extract project
+        # -------------------------------------------------
+
+        extraction = extract_project_zip(
+            zip_path=str(temporary_zip),
+            workspace_path=str(workspace_path),
+        )
+
+        # -------------------------------------------------
+        # Delete temporary ZIP
+        # -------------------------------------------------
+
+        temporary_zip.unlink(
+            missing_ok=True
+        )
+
+        return {
+            "status": "success",
+            "message": (
+                "Project uploaded successfully."
+            ),
+            "project_id": (
+                workspace_info["project_id"]
+            ),
+            "project_name": (
+                workspace_info["project_name"]
+            ),
+            "workspace_path": (
+                workspace_info["workspace_path"]
+            ),
+            "extracted_files": (
+                extraction["extracted_files"]
+            ),
+        }
+
+    except PermissionError as error:
+
+        if temporary_zip:
+            temporary_zip.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        if temporary_zip:
+            temporary_zip.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        if temporary_zip:
+            temporary_zip.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+
+        if temporary_zip:
+            temporary_zip.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        if temporary_zip:
+            temporary_zip.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Project upload failed: "
+                f"{error}"
+            ),
+        )
+
+
+# =========================================================
+# GET PROJECT
+# =========================================================
+
+
+@app.get("/projects/{project_id}")
+def get_project(
+    project_id: str,
+):
+    """
+    Get information about an uploaded project.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        files = []
+
+        for path in workspace.rglob("*"):
+
+            if path.is_file():
+
+                relative_path = (
+                    path.relative_to(
+                        workspace
+                    )
+                )
+
+                files.append(
+                    str(relative_path)
+                )
+
+        files.sort()
+
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "workspace_path": str(
+                workspace
+            ),
+            "files": files,
+            "file_count": len(files),
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+
+# =========================================================
+# ANALYZE UPLOADED PROJECT
+# =========================================================
+
+
+@app.get("/projects/{project_id}/analyze")
+def analyze_uploaded_project(
+    project_id: str,
+):
+    """
+    Analyze an uploaded project using its project ID.
+    """
+
+    try:
+
+        workspace = get_workspace(
+            project_id
+        )
+
+        analysis = scan_project(
+            str(workspace)
+        )
+
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "workspace_path": str(
+                workspace
+            ),
+            "analysis": analysis,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Project analysis failed: "
+                f"{error}"
+            ),
+        )
+
+
+# =========================================================
+# AI COMMAND
 # =========================================================
 
 
@@ -160,69 +470,126 @@ def version_check():
 def receive_command(
     request: CommandRequest,
 ):
-    project_context = None
+    """
+    Send a natural-language command to SAGE.
 
-    if request.project_path:
+    The project ID is resolved internally to
+    the isolated project workspace.
+    """
 
-        try:
-            project_context = (
-                build_project_context(
-                    request.project_path
-                )
+    try:
+
+        workspace = get_workspace(
+            request.project_id
+        )
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    workspace_path = str(
+        workspace
+    )
+
+    # -----------------------------------------------------
+    # Build project context
+    # -----------------------------------------------------
+
+    try:
+
+        project_context = (
+            build_project_context(
+                workspace_path
             )
+        )
 
-        except FileNotFoundError as error:
-            raise HTTPException(
-                status_code=404,
-                detail=str(error),
-            )
+    except FileNotFoundError as error:
 
-        except NotADirectoryError as error:
-            raise HTTPException(
-                status_code=400,
-                detail=str(error),
-            )
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    # -----------------------------------------------------
+    # Generate streaming AI response
+    # -----------------------------------------------------
 
     def generate_response():
 
         system_prompt = (
             "You are SAGE, an AI "
             "software development "
-            "assistant. "
+            "assistant.\n\n"
 
-            "Give concise and "
-            "practical answers. "
+            "You are working on the "
+            "uploaded project provided "
+            "by the user.\n\n"
 
-            "When a developer asks "
-            "for a software change, "
-            "focus on understanding "
-            "the requested change "
-            "rather than giving "
-            "unnecessary explanations."
+            "Understand the actual project "
+            "before suggesting changes.\n\n"
+
+            "Never invent files, functions, "
+            "components, dependencies, or "
+            "project structure.\n\n"
+
+            "When the user asks for a code "
+            "modification, identify the "
+            "relevant existing files and "
+            "explain what should change.\n\n"
+
+            "Actual modifications must go "
+            "through SAGE's validated change "
+            "pipeline."
         )
 
         if project_context:
 
+            if isinstance(
+                project_context,
+                dict,
+            ):
+
+                context_text = (
+                    project_context.get(
+                        "context",
+                        str(project_context),
+                    )
+                )
+
+            else:
+
+                context_text = str(
+                    project_context
+                )
+
             system_prompt += (
                 "\n\n"
-                "You have access to "
-                "the actual project "
-                "context below.\n\n"
-
-                "Use it to answer "
-                "questions about "
-                "the project.\n\n"
-
-                "Do not invent files, "
-                "components, functions, "
-                "or dependencies that "
-                "are not present in "
-                "the context.\n\n"
-
                 "PROJECT CONTEXT:\n"
-                + project_context[
-                    "context"
-                ]
+                + context_text
             )
 
         response = ollama.chat(
@@ -261,7 +628,7 @@ def receive_command(
 
 
 # =========================================================
-# Project Analysis Endpoint
+# ANALYZE PROJECT USING DIRECT PATH
 # =========================================================
 
 
@@ -269,6 +636,12 @@ def receive_command(
 def analyze_project(
     request: ProjectAnalysisRequest,
 ):
+    """
+    Analyze a project using a filesystem path.
+
+    Kept for backend development/testing.
+    Uploaded projects should use project_id.
+    """
 
     try:
 
@@ -297,7 +670,7 @@ def analyze_project(
 
 
 # =========================================================
-# Read File Endpoint
+# READ FILE
 # =========================================================
 
 
@@ -305,6 +678,11 @@ def analyze_project(
 def read_file(
     request: FileReadRequest,
 ):
+    """
+    Read a file from a project.
+
+    Kept for backend development/testing.
+    """
 
     try:
 
@@ -341,7 +719,7 @@ def read_file(
 
 
 # =========================================================
-# Project Context Endpoint
+# PROJECT CONTEXT
 # =========================================================
 
 
@@ -349,6 +727,11 @@ def read_file(
 def project_context(
     request: ProjectAnalysisRequest,
 ):
+    """
+    Build context from a project.
+
+    Kept for backend development/testing.
+    """
 
     try:
 
@@ -377,7 +760,7 @@ def project_context(
 
 
 # =========================================================
-# Change Planning Endpoint
+# CHANGE PLAN
 # =========================================================
 
 
@@ -385,15 +768,37 @@ def project_context(
 def plan_change(
     request: ChangePlanRequest,
 ):
+    """
+    Create a structured change plan for
+    an uploaded SAGE project.
+    """
 
     try:
 
-        plan = create_change_plan(
-            request.project_path,
+        workspace = get_workspace(
+            request.project_id
+        )
+
+        plan_result = create_change_plan(
+            str(workspace),
             request.command,
         )
 
-        return plan
+        return {
+            "status": "success",
+            "project_id": request.project_id,
+            "plan": plan_result.get(
+                "plan",
+                plan_result,
+            ),
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
 
     except FileNotFoundError as error:
 
@@ -409,9 +814,19 @@ def plan_change(
             detail=str(error),
         )
 
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Change planning failed: "
+                f"{error}"
+            ),
+        )
+
 
 # =========================================================
-# Code Modification Proposal Endpoint
+# PROPOSE CODE CHANGE
 # =========================================================
 
 
@@ -419,15 +834,48 @@ def plan_change(
 def propose_change(
     request: CodeModificationRequest,
 ):
+    """
+    Generate a proposed code modification
+    for an uploaded SAGE project.
+
+    This endpoint DOES NOT modify files.
+
+    It generates and validates a structured
+    patch that can later be submitted to
+    /apply-change after user approval.
+    """
 
     try:
 
+        # -------------------------------------------------
+        # Resolve project ID
+        # -------------------------------------------------
+
+        workspace = get_workspace(
+            request.project_id
+        )
+
+        # -------------------------------------------------
+        # Generate proposed code changes
+        # -------------------------------------------------
+
         result = generate_code_changes(
-            request.project_path,
+            str(workspace),
             request.command,
         )
 
-        return result
+        return {
+            "status": "success",
+            "project_id": request.project_id,
+            "proposal": result,
+        }
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
 
     except FileNotFoundError as error:
 
@@ -443,9 +891,19 @@ def propose_change(
             detail=str(error),
         )
 
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Code modification proposal "
+                f"failed: {error}"
+            ),
+        )
+
 
 # =========================================================
-# Apply Change Endpoint
+# APPLY CHANGE
 # =========================================================
 
 
@@ -453,10 +911,13 @@ def propose_change(
 def apply_change(
     request: ApplyChangeRequest,
 ):
+    """
+    Validate, backup, apply, verify,
+    and automatically rollback a change
+    when verification fails.
 
-    # -----------------------------------------------------
-    # Approval check
-    # -----------------------------------------------------
+    The project is identified using project_id.
+    """
 
     if not request.approved:
 
@@ -471,14 +932,49 @@ def apply_change(
 
     backup_path = None
 
+    # -----------------------------------------------------
+    # Resolve workspace
+    # -----------------------------------------------------
+
+    try:
+
+        workspace = get_workspace(
+            request.project_id
+        )
+
+    except PermissionError as error:
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except NotADirectoryError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    project_path = str(
+        workspace
+    )
+
     try:
 
         # -------------------------------------------------
-        # Step 1: Validate patch
+        # STEP 1: Validate patch
         # -------------------------------------------------
 
         validate_patch(
-            project_path=request.project_path,
+            project_path=project_path,
             file_path=request.file_path,
             operation=request.operation,
             anchor=request.anchor,
@@ -486,20 +982,20 @@ def apply_change(
         )
 
         # -------------------------------------------------
-        # Step 2: Create backup
+        # STEP 2: Create backup
         # -------------------------------------------------
 
         backup_path = create_backup(
-            project_path=request.project_path,
+            project_path=project_path,
             file_path=request.file_path,
         )
 
         # -------------------------------------------------
-        # Step 3: Apply patch
+        # STEP 3: Apply patch
         # -------------------------------------------------
 
         result = apply_patch(
-            project_path=request.project_path,
+            project_path=project_path,
             file_path=request.file_path,
             operation=request.operation,
             anchor=request.anchor,
@@ -507,27 +1003,27 @@ def apply_change(
         )
 
         # -------------------------------------------------
-        # Step 4: Verify changed file
+        # STEP 4: Verify
         # -------------------------------------------------
 
         verification = verify_changed_file(
-            project_path=request.project_path,
+            project_path=project_path,
             file_path=request.file_path,
         )
 
         # -------------------------------------------------
-        # Step 5: Rollback if verification fails
+        # STEP 5: Rollback if verification fails
         # -------------------------------------------------
 
         if verification["status"] != "passed":
 
             rollback_result = rollback_change(
-                project_path=request.project_path,
+                project_path=project_path,
                 file_path=request.file_path,
             )
 
             history_entry = record_change(
-                project_path=request.project_path,
+                project_path=project_path,
                 file_path=request.file_path,
                 operation=request.operation,
                 status="failed",
@@ -539,13 +1035,13 @@ def apply_change(
                 ),
                 message=(
                     "Change failed verification "
-                    "and was automatically "
-                    "rolled back."
+                    "and was automatically rolled back."
                 ),
             )
 
             return {
                 "status": "failed",
+                "project_id": request.project_id,
                 "message": (
                     "Change was applied, but "
                     "verification failed. "
@@ -559,11 +1055,11 @@ def apply_change(
             }
 
         # -------------------------------------------------
-        # Step 6: Record successful change
+        # STEP 6: Record success
         # -------------------------------------------------
 
         history_entry = record_change(
-            project_path=request.project_path,
+            project_path=project_path,
             file_path=request.file_path,
             operation=request.operation,
             status="success",
@@ -578,11 +1074,12 @@ def apply_change(
         )
 
         # -------------------------------------------------
-        # Step 7: Successful response
+        # STEP 7: Return success
         # -------------------------------------------------
 
         return {
             "status": "success",
+            "project_id": request.project_id,
             "message": (
                 "Change applied and "
                 "verified successfully."
@@ -593,10 +1090,6 @@ def apply_change(
             "history": history_entry,
         }
 
-    # -----------------------------------------------------
-    # Security error
-    # -----------------------------------------------------
-
     except PermissionError as error:
 
         if backup_path:
@@ -604,7 +1097,7 @@ def apply_change(
             try:
 
                 rollback_change(
-                    project_path=request.project_path,
+                    project_path=project_path,
                     file_path=request.file_path,
                 )
 
@@ -616,10 +1109,6 @@ def apply_change(
             detail=str(error),
         )
 
-    # -----------------------------------------------------
-    # Missing file
-    # -----------------------------------------------------
-
     except FileNotFoundError as error:
 
         if backup_path:
@@ -627,7 +1116,7 @@ def apply_change(
             try:
 
                 rollback_change(
-                    project_path=request.project_path,
+                    project_path=project_path,
                     file_path=request.file_path,
                 )
 
@@ -639,10 +1128,6 @@ def apply_change(
             detail=str(error),
         )
 
-    # -----------------------------------------------------
-    # Directory instead of file
-    # -----------------------------------------------------
-
     except IsADirectoryError as error:
 
         if backup_path:
@@ -650,7 +1135,7 @@ def apply_change(
             try:
 
                 rollback_change(
-                    project_path=request.project_path,
+                    project_path=project_path,
                     file_path=request.file_path,
                 )
 
@@ -661,10 +1146,6 @@ def apply_change(
             status_code=400,
             detail=str(error),
         )
-
-    # -----------------------------------------------------
-    # Validation / patch error
-    # -----------------------------------------------------
 
     except ValueError as error:
 
@@ -673,7 +1154,7 @@ def apply_change(
             try:
 
                 rollback_change(
-                    project_path=request.project_path,
+                    project_path=project_path,
                     file_path=request.file_path,
                 )
 
@@ -685,69 +1166,55 @@ def apply_change(
             detail=str(error),
         )
 
-    # -----------------------------------------------------
-    # Unexpected error
-    # -----------------------------------------------------
-
     except Exception as error:
-
-        rollback_result = None
 
         if backup_path:
 
             try:
 
-                rollback_result = rollback_change(
-                    project_path=request.project_path,
+                rollback_change(
+                    project_path=project_path,
                     file_path=request.file_path,
                 )
 
             except Exception:
-
-                rollback_result = {
-                    "status": "rollback_failed",
-                    "message": (
-                        "The change failed and "
-                        "automatic rollback "
-                        "also failed."
-                    ),
-                }
-
-        detail = (
-            "The change could not be completed."
-        )
-
-        if rollback_result:
-
-            detail += (
-                " The original file was "
-                "restored from the backup."
-            )
+                pass
 
         raise HTTPException(
             status_code=500,
-            detail=detail,
+            detail=(
+                "The change could not be completed: "
+                f"{error}"
+            ),
         )
 
 
 # =========================================================
-# Change History Endpoint
+# CHANGE HISTORY
 # =========================================================
 
 
 @app.get("/change-history")
 def change_history(
-    project_path: str,
+    project_id: str,
 ):
+    """
+    Get SAGE change history for an uploaded project.
+    """
 
     try:
 
+        workspace = get_workspace(
+            project_id
+        )
+
         history = get_change_history(
-            project_path
+            str(workspace)
         )
 
         return {
             "status": "success",
+            "project_id": project_id,
             "history": history,
         }
 
@@ -758,6 +1225,13 @@ def change_history(
             detail=str(error),
         )
 
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
     except Exception as error:
 
         raise HTTPException(
@@ -767,27 +1241,45 @@ def change_history(
 
 
 # =========================================================
-# Clear Change History Endpoint
+# CLEAR CHANGE HISTORY
 # =========================================================
 
 
 @app.delete("/change-history")
 def clear_change_history_endpoint(
-    project_path: str,
+    project_id: str,
 ):
+    """
+    Clear SAGE change history for an uploaded project.
+    """
 
     try:
 
-        result = clear_change_history(
-            project_path
+        workspace = get_workspace(
+            project_id
         )
 
-        return result
+        result = clear_change_history(
+            str(workspace)
+        )
+
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "result": result,
+        }
 
     except PermissionError as error:
 
         raise HTTPException(
             status_code=403,
+            detail=str(error),
+        )
+
+    except FileNotFoundError as error:
+
+        raise HTTPException(
+            status_code=404,
             detail=str(error),
         )
 
