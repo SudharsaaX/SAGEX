@@ -29,3 +29,4 @@ build/
 
 # SAGE runtime data
 data/
+.sage-x/

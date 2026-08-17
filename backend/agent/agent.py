@@ -6,7 +6,9 @@ from ollama import Client
 from project_tools.files import read_file
 from project_tools.search import search_project
 from project_tools.listing import list_files
+from project_tools.history import list_history as get_history
 from project_tools.workspace import Workspace
+from project_tools.approval import create_change
 
 
 client = Client(host="http://localhost:11434")
@@ -29,7 +31,8 @@ class SageAgent:
                         "type": "object",
                         "properties": {
                             "file_path": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Path relative to the project root."
                             }
                         },
                         "required": ["file_path"]
@@ -45,7 +48,8 @@ class SageAgent:
                         "type": "object",
                         "properties": {
                             "query": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Text, function, class, variable, or code pattern to search for."
                             }
                         },
                         "required": ["query"]
@@ -62,6 +66,51 @@ class SageAgent:
                         "properties": {}
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_history",
+                    "description": (
+                        "List recent SAGE-X change history records. "
+                        "Use this to answer questions about previous changes, why files changed, "
+                        "or what SAGE-X changed recently."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of recent history records to return."
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "propose_change",
+                    "description": (
+                        "Propose a modification to a project file. "
+                        "Do not directly modify the file. "
+                        "Use this after inspecting the relevant files."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path relative to the project root."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "The complete new content of the file."
+                            }
+                        },
+                        "required": ["file_path", "content"]
+                    }
+                }
             }
         ]
 
@@ -71,21 +120,35 @@ class SageAgent:
                 "content": """
 You are SAGE-X, a local AI software development assistant.
 
-You are working inside a real software project.
+You work inside a real software project.
 
-You have these tools:
+AVAILABLE TOOLS:
 
 read_file
-- Read the contents of a specific project file.
+- Read a project file.
 
 search_project
-- Find files containing a specific word, phrase, function,
-  class, variable, or code pattern.
+- Search project files for text or code.
 
 list_files
 - List project files.
 
-IMPORTANT BEHAVIOR:
+list_history
+- List recent SAGE-X change history records.
+- Use this for questions like:
+  "What was the last change?"
+  "Show recent changes."
+  "Why did we change a file?"
+  "What did SAGE-X modify?"
+
+propose_change
+- Propose a modification to a project file.
+- NEVER directly modify files.
+- The user must approve the proposed change before it is written.
+- When the user asks for a modification, call this tool after inspecting the relevant files.
+- Do NOT ask the user whether they want you to propose the change.
+
+BEHAVIOR:
 
 If the user asks about a specific file:
 use read_file.
@@ -93,24 +156,31 @@ use read_file.
 If the user asks where something exists:
 use search_project.
 
-If the user asks how a feature or system works:
-first search the project for relevant terms,
-then read the relevant files,
-then explain the result.
+If the user asks how a feature works:
+search first, then read relevant files.
 
-If the user asks about the overall project:
-inspect relevant files before answering.
+If the user asks about previous changes or change history:
+use list_history.
 
-Never pretend that you inspected a file when you did not.
+If the user asks for a code modification:
+1. Find the relevant files.
+2. Read the relevant files.
+3. Understand the existing implementation.
+4. Decide what needs to change.
+5. Use propose_change.
+6. NEVER pretend the modification has already been applied.
 
-When a tool is needed, output ONLY:
+If a change is proposed, return the change information clearly.
 
-{
-  "name": "tool_name",
-  "arguments": {
-    "argument": "value"
-  }
-}
+Do not control approval yourself.
+SAGE-X owns approval state.
+After propose_change is called, SAGE-X will return the change ID and approval instructions.
+
+IMPORTANT:
+You are allowed to inspect files and propose changes.
+You are NOT allowed to directly write files.
+
+When you need a tool, use the available tool calling mechanism.
 """
             },
             {
@@ -119,11 +189,7 @@ When a tool is needed, output ONLY:
             }
         ]
 
-        # ---------------------------------------------------------
-        # AGENT LOOP
-        # ---------------------------------------------------------
-
-        max_steps = 8
+        max_steps = 12
 
         for _ in range(max_steps):
 
@@ -133,10 +199,7 @@ When a tool is needed, output ONLY:
                 tools=tools
             )
 
-            # -----------------------------------------------------
-            # Native Ollama tool call
-            # -----------------------------------------------------
-
+            # Native Ollama tool calls
             if response.message.tool_calls:
 
                 messages.append(response.message)
@@ -148,22 +211,24 @@ When a tool is needed, output ONLY:
 
                     result = self.execute_tool(
                         name,
-                        arguments
+                        arguments,
+                        command
                     )
+
+                    if name == "propose_change" and result.get("status") == "PENDING_APPROVAL":
+                        return self.format_change_proposal(result)
 
                     messages.append({
                         "role": "tool",
-                        "content": str(result)
+                        "content": json.dumps(result)
                     })
 
                 continue
 
-            # -----------------------------------------------------
-            # JSON returned as normal text
-            # -----------------------------------------------------
-
+            # Normal response
             content = response.message.content.strip()
 
+            # Fallback for models returning JSON instead of native tools
             tool_request = self.extract_tool_request(content)
 
             if tool_request:
@@ -173,8 +238,12 @@ When a tool is needed, output ONLY:
 
                 result = self.execute_tool(
                     name,
-                    arguments
+                    arguments,
+                    command
                 )
+
+                if name == "propose_change" and result.get("status") == "PENDING_APPROVAL":
+                    return self.format_change_proposal(result)
 
                 messages.append({
                     "role": "assistant",
@@ -189,36 +258,24 @@ SAGE-X executed the `{name}` tool.
 Tool result:
 
 --- BEGIN TOOL RESULT ---
-{result}
+{json.dumps(result)}
 --- END TOOL RESULT ---
 
 Continue working on the original request.
 
-If more project information is required, request another appropriate
-tool.
+If another tool is required, use it.
 
 If you have enough information, provide the final answer.
-
-Do not output JSON.
-Do not describe the tool call.
 """
                 })
 
                 continue
 
-            # -----------------------------------------------------
-            # Normal final answer
-            # -----------------------------------------------------
-
             return content
 
-        return "I reached the project-analysis step limit before completing the request."
+        return "SAGE-X reached its maximum reasoning steps."
 
-    # =============================================================
-    # TOOL EXECUTION
-    # =============================================================
-
-    def execute_tool(self, name, arguments):
+    def execute_tool(self, name, arguments, user_request=None):
 
         if name == "read_file":
 
@@ -240,11 +297,57 @@ Do not describe the tool call.
                 self.workspace
             )
 
-        return "Unknown tool."
+        if name == "list_history":
 
-    # =============================================================
-    # TOOL REQUEST EXTRACTION
-    # =============================================================
+            limit = arguments.get("limit", 20)
+
+            return get_history(
+                self.workspace,
+                limit
+            )
+
+        if name == "propose_change":
+
+            file_path = arguments["file_path"]
+            new_content = arguments["content"]
+
+            path = self.workspace.get_path(file_path)
+
+            if path.exists() and path.is_file():
+                old_content = path.read_text(encoding="utf-8")
+            else:
+                old_content = ""
+
+            change = create_change(
+                file_path,
+                old_content,
+                new_content,
+                user_request
+            )
+
+            return change
+
+        return {
+            "error": f"Unknown tool: {name}"
+        }
+
+    def format_change_proposal(self, change):
+        return f"""CHANGE PROPOSED
+
+File:
+{change["file_path"]}
+
+Change ID:
+{change["change_id"]}
+
+Status:
+{change["status"]}
+
+Diff:
+{change["diff"]}
+
+Approve with:
+POST /approve/{change["change_id"]}"""
 
     def extract_tool_request(self, content):
 
