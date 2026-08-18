@@ -999,3 +999,30 @@ button {
   flex: 1 1 auto;
   min-height: 0;
 }
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.terminal-cwd {
+  flex: 1;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  color: #555;
+
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.terminal-prompt {
+  color: #777;
+  font-family: var(--mono);
+  font-size: 12px;
+}

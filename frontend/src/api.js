@@ -38,4 +38,8 @@ export default {
     const res = await client.post(`/reject/${changeId}`);
     return res.data;
   },
+  async executeTerminal(command) {
+    const res = await client.post("/terminal", { command });
+    return res.data;
+  },
 };

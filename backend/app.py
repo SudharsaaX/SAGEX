@@ -4,6 +4,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog
 from agent.agent import SageAgent
+import subprocess
 
 from project_tools.approval import (
     get_change,
@@ -25,6 +26,16 @@ agent = None
 
 @app.route("/workspace", methods=["POST"])
 def set_workspace():
+    global shell_process
+
+    if shell_process is not None:
+        try:
+            shell_process.terminate()
+        except Exception:
+            pass
+
+        shell_process = None
+    
     global agent
 
     data = request.json
@@ -192,6 +203,92 @@ def pick_workspace():
         return jsonify({"path": folder}), 200
     except Exception as e:
         return jsonify({"path": None, "error": str(e)}), 500
+
+
+shell_process = None
+shell_lock = threading.Lock()
+
+
+def start_shell():
+    global shell_process
+
+    if shell_process is not None:
+        return shell_process
+
+    shell_process = subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        cwd=str(agent.workspace.root),
+    )
+
+    return shell_process
+
+
+@app.route("/terminal", methods=["POST"])
+def terminal():
+    global shell_process
+
+    if agent is None:
+        return jsonify({
+            "error": "Select a workspace first"
+        }), 400
+
+    data = request.json or {}
+    command = data.get("command", "").strip()
+
+    if not command:
+        return jsonify({
+            "error": "Command is required"
+        }), 400
+
+    try:
+        with shell_lock:
+            process = start_shell()
+
+            marker = "__SAGEX_COMMAND_DONE__"
+
+            process.stdin.write(
+                f"{command}\n"
+                f"Write-Output '{marker}'\n"
+            )
+            process.stdin.flush()
+
+            output = []
+
+            while True:
+                line = process.stdout.readline()
+
+                if not line:
+                    break
+
+                line = line.rstrip("\r\n")
+
+                if line == marker:
+                    break
+
+                output.append(line)
+
+            return jsonify({
+                "output": "\n".join(output),
+                "cwd": str(agent.workspace.root),
+            })
+
+    except Exception as error:
+        shell_process = None
+
+        return jsonify({
+            "error": str(error)
+        }), 500
 
 
 if __name__ == "__main__":
